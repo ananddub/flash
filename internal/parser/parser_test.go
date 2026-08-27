@@ -130,6 +130,31 @@ func TestAnalyzeQuery_CTEWithDerivedOuterTable(t *testing.T) {
 	}
 }
 
+func TestAnalyzeQuery_CTEQuestionParamsUseSchemaTypes(t *testing.T) {
+	p := NewQueryParser(&config.Config{Database: config.Database{Provider: "sqlite"}})
+	schema := &Schema{Tables: []*Table{
+		{Name: "user_policy", Columns: []*Column{{Name: "user_id", Type: "INTEGER"}, {Name: "org_id", Type: "INTEGER"}}},
+		{Name: "organization_members", Columns: []*Column{{Name: "user_id", Type: "INTEGER"}, {Name: "organization_id", Type: "INTEGER"}}},
+	}}
+	p.typeInferrer = NewTypeInferrerWithSchema(schema)
+	query := &Query{
+		Name: "EffectivePermissions",
+		SQL: `WITH permissions AS (
+			SELECT user_id FROM user_policy WHERE user_id = ? AND org_id = ?
+		) SELECT user_id FROM organization_members
+		WHERE user_id = ? AND organization_id = ?`,
+	}
+	if err := p.analyzeQuery(query, schema); err != nil {
+		t.Fatalf("query analysis failed: %v", err)
+	}
+	wantNames := []string{"user_id", "org_id", "user_id2", "organization_id"}
+	for i, param := range query.Params {
+		if param.Name != wantNames[i] || param.Type != "INTEGER" {
+			t.Errorf("param%d = %s/%s, want %s/INTEGER", i+1, param.Name, param.Type, wantNames[i])
+		}
+	}
+}
+
 func TestParseCreateTables_Multiple(t *testing.T) {
 	p := newSchemaParser(t, t.TempDir())
 	sql := `
@@ -257,6 +282,55 @@ func TestTypeInferrer_InferParamName_Insert(t *testing.T) {
 	}
 	if got := ti.InferParamName(sql, 2); got != "name" {
 		t.Errorf("param 2 = %q, want name", got)
+	}
+}
+
+func TestTypeInferrer_InferParamName_InsertWithLiteralAndFunction(t *testing.T) {
+	ti := NewTypeInferrer()
+	sql := "INSERT INTO deployments (title, status, last_state_at) VALUES (?, 'QUEUED', strftime('%s', 'now'))"
+	if got := ti.InferParamName(sql, 1); got != "title" {
+		t.Errorf("param1 name = %q, want title", got)
+	}
+}
+
+func TestTypeInferrer_InferParamName_UpdateCoalesce(t *testing.T) {
+	ti := NewTypeInferrer()
+	sql := "UPDATE applications SET app_status = COALESCE(?, app_status), last_error = COALESCE(?, last_error) WHERE id = ?"
+	for index, want := range []string{"app_status", "last_error", "id"} {
+		if got := ti.InferParamName(sql, index+1); got != want {
+			t.Errorf("param%d name = %q, want %s", index+1, got, want)
+		}
+	}
+}
+
+func TestTypeInferrer_InferParamName_WrappedComparisons(t *testing.T) {
+	ti := NewTypeInferrer()
+	sql := "SELECT id FROM applications WHERE lower(repository) = lower(?) AND lower(owner) = lower(?)"
+	for index, want := range []string{"repository", "owner"} {
+		if got := ti.InferParamName(sql, index+1); got != want {
+			t.Errorf("param%d name = %q, want %s", index+1, got, want)
+		}
+	}
+}
+
+func TestTypeInferrer_InferParamName_OptionalId(t *testing.T) {
+	ti := NewTypeInferrer()
+	sql := "SELECT COUNT(*) FROM domains WHERE lower(host) = lower(trim(?, '.')) AND (? IS NULL OR id != ?)"
+	if got := ti.InferParamName(sql, 2); got != "id" {
+		t.Errorf("nullable param name = %q, want id", got)
+	}
+	if got := ti.InferParamName(sql, 3); got != "id" {
+		t.Errorf("id comparison name = %q, want id", got)
+	}
+}
+
+func TestTypeInferrer_InferParamName_DomainWrappedPath(t *testing.T) {
+	ti := NewTypeInferrer()
+	sql := "SELECT COUNT(*) FROM domains WHERE lower(trim(host, '.')) = lower(trim(?, '.')) AND COALESCE(NULLIF(rtrim(path, '/'), ''), '/') = ? AND (? IS NULL OR id != ?)"
+	for index, want := range []string{"host", "path", "id", "id"} {
+		if got := ti.InferParamName(sql, index+1); got != want {
+			t.Errorf("param%d name = %q, want %s", index+1, got, want)
+		}
 	}
 }
 

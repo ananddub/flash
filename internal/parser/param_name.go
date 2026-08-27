@@ -4,9 +4,38 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Lumos-Labs-HQ/flash/internal/utils"
 )
 
 func (ti *TypeInferrer) InferParamName(sql string, paramIndex int) string {
+	if strings.Contains(sql, "?") {
+		if name := inferQuestionContextName(sql, paramIndex); name != "" {
+			return name
+		}
+	}
+	if strings.Contains(sql, "?") {
+		re := regexp.MustCompile(`(?i)\?\s*=\s*ANY\s*\(\s*(?:\w+\.)*(\w+)\s*\)`)
+		for _, match := range re.FindAllStringSubmatchIndex(sql, -1) {
+			if strings.Count(sql[:match[0]], "?")+1 == paramIndex {
+				return sql[match[2]:match[3]]
+			}
+		}
+	}
+	// Resolve placeholders in INSERT value lists and function-wrapped UPDATE
+	// assignments before the legacy pattern handlers. Those handlers assume a
+	// one-to-one parameter/column position and misname literals or COALESCE.
+	if strings.Contains(sql, "?") && (strings.Contains(strings.ToUpper(sql), "INSERT INTO") ||
+		strings.Contains(strings.ToUpper(sql), "COALESCE")) {
+		if name := inferQuestionParamName(sql, paramIndex); name != "" {
+			return name
+		}
+	}
+	if strings.Contains(sql, "?") {
+		if name := inferQuestionAnyName(sql, paramIndex); name != "" {
+			return name
+		}
+	}
 	// Check for INSERT statement first — collect ALL column names from every INSERT in multi-statement SQL
 	insertColRegex := regexp.MustCompile(`(?i)INSERT\s+INTO\s+\S+\s*\(([\s\S]*?)\)\s*VALUES`)
 	allInsertCols := []string{}
@@ -38,17 +67,6 @@ func (ti *TypeInferrer) InferParamName(sql string, paramIndex int) string {
 			beforeMatch := sql[:strings.Index(sql, match[0])]
 			if strings.Count(beforeMatch, "?")+1 == paramIndex {
 				return match[1] + "_prefix"
-			}
-		}
-
-		// ? = ANY(col) or ? = ANY(alias.col) — reverse ANY pattern with ? params
-		anyQRe := regexp.MustCompile(`\?\s*=\s*ANY\s*\(\s*(?:\w+\.)?(\w+)\s*\)`)
-		if allAnyMatches := anyQRe.FindAllStringSubmatchIndex(sql, -1); len(allAnyMatches) > 0 {
-			for _, loc := range allAnyMatches {
-				beforeMatch := sql[:loc[0]]
-				if strings.Count(beforeMatch, "?")+1 == paramIndex {
-					return anyQRe.FindStringSubmatch(sql[loc[0]:loc[1]])[1]
-				}
 			}
 		}
 
@@ -190,6 +208,11 @@ func (ti *TypeInferrer) InferParamName(sql string, paramIndex int) string {
 					}
 				}
 			}
+		}
+	}
+	if strings.Contains(sql, "?") {
+		if name := inferQuestionParamName(sql, paramIndex); name != "" {
+			return name
 		}
 	}
 
@@ -445,4 +468,204 @@ func (ti *TypeInferrer) InferParamName(sql string, paramIndex int) string {
 	}
 
 	return fmt.Sprintf("param%d", paramIndex)
+}
+
+// inferQuestionContextName resolves placeholders hidden inside common SQL
+// wrappers (lower/trim/coalesce) and nullable-id predicates. It is positional
+// so it remains correct when a query contains multiple wrapped expressions.
+func inferQuestionContextName(sql string, paramIndex int) string {
+	// Optional filters repeat the same value twice ("? IS NULL OR col = ?").
+	// Associate both placeholders with the comparison column, regardless of the
+	// operator or qualification. This prevents the first placeholder from being
+	// rendered as the SQL token `NULL` (n_u_l_l in generated Rust).
+	optional := regexp.MustCompile(`(?i)\?\s+IS\s+NULL\s+OR\s+(?:\w+\.)?(\w+)\s*(?:=|!=|<>|>=|<=|>|<)\s*\?`)
+	position := questionParamPosition(sql, paramIndex)
+	for _, match := range optional.FindAllStringSubmatchIndex(sql, -1) {
+		first := strings.Index(sql[match[0]:match[1]], "?")
+		second := strings.LastIndex(sql[match[0]:match[1]], "?")
+		if (first >= 0 && position == match[0]+first) || (second >= 0 && position == match[0]+second) {
+			return sql[match[2]:match[3]]
+		}
+	}
+
+	// Function-wrapped comparisons (lower(trim(host, '.')) = lower(trim(?, '.')))
+	// need the underlying column rather than a generic parameter name. Parse the
+	// expression immediately to the left of the comparison and select its first
+	// non-function identifier (host/path/etc.).
+	if position >= 0 {
+		clause := sql[:position]
+		clauseStart := lastLogicalBoundary(clause)
+		clause = clause[clauseStart:]
+		if op := lastComparisonOperator(clause); op >= 0 {
+			left := clause[:op]
+			leftTrimmed := strings.TrimSpace(left)
+			if strings.HasSuffix(leftTrimmed, ")") {
+				if name := wrappedExpressionColumn(left); name != "" {
+					return name
+				}
+			}
+		}
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(\w+)\s*=\s*(?:lower|upper|trim|rtrim|ltrim)\s*\(\s*\?`),
+		regexp.MustCompile(`(?i)(?:lower|upper|trim|rtrim|ltrim)\s*\(\s*(\w+)\s*\)\s*=\s*(?:lower|upper|trim|rtrim|ltrim)\s*\(\s*\?`),
+		regexp.MustCompile(`(?i)(\w+)\s*(?:!=|<>|>=|<=|>|<)\s*\?`),
+	}
+	for _, pattern := range patterns {
+		for _, match := range pattern.FindAllStringSubmatchIndex(sql, -1) {
+			question := strings.Index(sql[match[0]:match[1]], "?")
+			if question < 0 {
+				continue
+			}
+			questionPos := match[0] + question
+			if questionParamPosition(sql, paramIndex) == questionPos {
+				return sql[match[2]:match[3]]
+			}
+		}
+	}
+	return ""
+}
+
+func lastLogicalBoundary(s string) int {
+	boundary := regexp.MustCompile(`(?i)\b(?:WHERE|AND|OR)\b`)
+	last := 0
+	for _, loc := range boundary.FindAllStringIndex(s, -1) {
+		last = loc[1]
+	}
+	return last
+}
+
+func lastComparisonOperator(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '=' || s[i] == '>' || s[i] == '<' {
+			// Skip a comparison operator that belongs to a nested expression.
+			return i
+		}
+	}
+	return -1
+}
+
+func wrappedExpressionColumn(expr string) string {
+	// Ignore quoted literals and collect identifiers that are not function names.
+	expr = regexp.MustCompile(`'([^']|'')*'`).ReplaceAllString(expr, " ")
+	ident := regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\b\s*(\()?`)
+	functions := map[string]bool{"lower": true, "upper": true, "trim": true, "rtrim": true, "ltrim": true, "coalesce": true, "nullif": true, "cast": true}
+	keywords := map[string]bool{"and": true, "or": true, "where": true, "case": true, "when": true, "then": true, "else": true, "end": true, "null": true}
+	for _, m := range ident.FindAllStringSubmatch(expr, -1) {
+		name := strings.ToLower(m[1])
+		if m[2] == "(" || functions[name] || keywords[name] {
+			continue
+		}
+		// A qualified name's first identifier is an alias, not the column.
+		if strings.Contains(expr, m[1]+".") {
+			continue
+		}
+		return m[1]
+	}
+	return ""
+}
+
+func inferQuestionAnyName(sql string, paramIndex int) string {
+	re := regexp.MustCompile(`(?i)\?\s*=\s*ANY\s*\(\s*(?:\w+\.)*(\w+)\s*\)`)
+	for _, match := range re.FindAllStringSubmatchIndex(sql, -1) {
+		if strings.Count(sql[:match[0]], "?")+1 == paramIndex {
+			return sql[match[2]:match[3]]
+		}
+	}
+	return ""
+}
+
+func inferQuestionParamName(sql string, paramIndex int) string {
+	position := questionParamPosition(sql, paramIndex)
+	if position < 0 {
+		return ""
+	}
+
+	// INSERT columns must be mapped to the VALUES expression containing the
+	// placeholder; literals and function calls may mean column N is not param N.
+	insertRe := regexp.MustCompile(`(?i)INSERT\s+INTO\s+\S+\s*\(([^)]+)\)\s*VALUES\s*\(`)
+	if match := insertRe.FindStringSubmatchIndex(sql); len(match) >= 4 {
+		valuesOpen := match[1] - 1
+		valuesEnd := findMatchingParen(sql, valuesOpen)
+		if position > valuesOpen && valuesEnd > position {
+			columns := utils.SplitColumns(sql[match[2]:match[3]])
+			values := utils.SplitColumns(sql[valuesOpen+1 : valuesEnd])
+			offset := valuesOpen + 1
+			for i, value := range values {
+				start := strings.Index(sql[offset:valuesEnd], value)
+				if start < 0 {
+					continue
+				}
+				start += offset
+				end := start + len(value)
+				if position >= start && position < end && i < len(columns) {
+					return strings.Trim(strings.TrimSpace(columns[i]), `"'`)
+				}
+				offset = end
+			}
+		}
+	}
+
+	// UPDATE assignments can wrap placeholders in COALESCE/functions. Resolve
+	// the assignment containing this exact placeholder rather than only `col=?`.
+	setRe := regexp.MustCompile(`(?i)\bSET\b`)
+	if setLoc := setRe.FindStringIndex(sql); setLoc != nil && position > setLoc[1] {
+		setEnd := len(sql)
+		if whereLoc := regexp.MustCompile(`(?i)\bWHERE\b`).FindStringIndex(sql[setLoc[1]:]); whereLoc != nil {
+			setEnd = setLoc[1] + whereLoc[0]
+		}
+		if position < setEnd {
+			assignments := utils.SplitColumns(sql[setLoc[1]:setEnd])
+			offset := setLoc[1]
+			for _, assignment := range assignments {
+				start := strings.Index(sql[offset:setEnd], assignment)
+				if start < 0 {
+					continue
+				}
+				start += offset
+				end := start + len(assignment)
+				if position >= start && position < end {
+					if equals := strings.Index(assignment, "="); equals > 0 {
+						return strings.Trim(strings.TrimSpace(assignment[:equals]), `"'`)
+					}
+				}
+				offset = end
+			}
+		}
+	}
+
+	before := sql[:position]
+	after := sql[position+1:]
+	leftColumn := regexp.MustCompile(`(?i)(?:\w+\.)?(\w+)\s*(?:=|<>|!=|<=|>=|<|>|I?LIKE|IS)\s*$`)
+	if match := leftColumn.FindStringSubmatch(before); len(match) > 1 {
+		return match[1]
+	}
+	rightColumn := regexp.MustCompile(`(?i)^\s*(?:=|<>|!=|<=|>=|<|>|I?LIKE|IS)\s*(?:\w+\.)?(\w+)`)
+	if match := rightColumn.FindStringSubmatch(after); len(match) > 1 {
+		return match[1]
+	}
+	return ""
+}
+
+func questionParamPosition(sql string, paramIndex int) int {
+	index := 0
+	inString := false
+	for i := 0; i < len(sql); i++ {
+		if sql[i] == '\'' {
+			if inString && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+			continue
+		}
+		if !inString && sql[i] == '?' {
+			index++
+			if index == paramIndex {
+				return i
+			}
+		}
+	}
+	return -1
 }
