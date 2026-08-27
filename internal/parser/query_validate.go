@@ -4,22 +4,29 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Lumos-Labs-HQ/flash/internal/utils"
 )
 
 // validateInsertColumns validates that all columns in an INSERT statement exist in the table
 func (p *QueryParser) validateInsertColumns(sql string, table *Table) error {
-	insertRegex := regexp.MustCompile(`(?i)INSERT\s+INTO\s+[\w"]+\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)`)
+	insertRegex := regexp.MustCompile(`(?i)INSERT\s+INTO\s+[\w"]+\s*\(([^)]+)\)\s*VALUES\s*\(`)
 	matches := insertRegex.FindStringSubmatch(sql)
 
-	if len(matches) < 3 {
+	if len(matches) < 2 {
 		return nil
 	}
 
 	columnsStr := matches[1]
-	valuesStr := matches[2]
+	valuesOpen := insertRegex.FindStringIndex(sql)[1] - 1
+	valuesEnd := findMatchingParen(sql, valuesOpen)
+	if valuesEnd < 0 {
+		return nil
+	}
+	valuesStr := sql[valuesOpen+1 : valuesEnd]
 
-	columnNames := strings.Split(columnsStr, ",")
-	valueParams := strings.Split(valuesStr, ",")
+	columnNames := utils.SplitColumns(columnsStr)
+	valueParams := utils.SplitColumns(valuesStr)
 
 	if len(columnNames) != len(valueParams) {
 		return fmt.Errorf("column-value count mismatch: %d columns but %d values provided",

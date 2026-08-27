@@ -276,6 +276,12 @@ func (p *QueryParser) analyzeQuery(query *Query, schema *Schema) error {
 			tableName = stripIdentQuotes(match[1])
 		}
 	}
+	// Queries whose outer source is a derived table can leave a SQL keyword
+	// behind after parenthesized content is stripped (for example `FROM (
+	// SELECT ...) WHERE ...`). A keyword is never a schema table.
+	if utils.IsSQLKeyword(tableName) {
+		tableName = ""
+	}
 	// Runtime-selected table placeholders and SQLite virtual table functions
 	// are resolved by the database/application, not by the schema catalog.
 	if isDynamicOrVirtualTableName(tableName) {

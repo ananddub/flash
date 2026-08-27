@@ -62,6 +62,42 @@ func TestParseCreateTables_SQLiteQuotedColumns(t *testing.T) {
 	}
 }
 
+func TestParseCreateTables_SQLiteTableOptions(t *testing.T) {
+	p := newSchemaParser(t, t.TempDir())
+	sql := `CREATE TABLE postgres_dbs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		app_status TEXT NOT NULL DEFAULT 'IDLE',
+		replication_role TEXT NOT NULL DEFAULT 'STANDALONE'
+			CHECK (replication_role IN ('STANDALONE', 'PRIMARY', 'REPLICA')),
+		primary_host TEXT,
+		checksum_sha256 TEXT,
+		unique_config_key TEXT,
+		CONSTRAINT status_check CHECK (app_status IN ('IDLE', 'RUNNING'))
+	) STRICT;
+	CREATE TABLE memberships (
+		user_id INTEGER NOT NULL,
+		group_id INTEGER NOT NULL,
+		PRIMARY KEY (user_id, group_id)
+	) WITHOUT ROWID;`
+
+	tables := p.parseCreateTables(sql)
+	if len(tables) != 2 {
+		t.Fatalf("tables = %d, want 2", len(tables))
+	}
+	if tables[0].Name != "postgres_dbs" || tables[1].Name != "memberships" {
+		t.Fatalf("unexpected table names: %q, %q", tables[0].Name, tables[1].Name)
+	}
+	got := map[string]bool{}
+	for _, column := range tables[0].Columns {
+		got[column.Name] = true
+	}
+	for _, name := range []string{"id", "app_status", "replication_role", "primary_host", "checksum_sha256", "unique_config_key"} {
+		if !got[name] {
+			t.Errorf("missing SQLite STRICT table column %q; got %v", name, got)
+		}
+	}
+}
+
 func TestAnalyzeQuery_SQLiteDynamicAndJSONSources(t *testing.T) {
 	p := NewQueryParser(&config.Config{Database: config.Database{Provider: "sqlite"}})
 	schema := &Schema{Tables: []*Table{{Name: "postgres_dbs", Columns: []*Column{{Name: "primary_host", Type: "TEXT"}, {Name: "preferences", Type: "JSON"}}}}}
@@ -72,6 +108,25 @@ func TestAnalyzeQuery_SQLiteDynamicAndJSONSources(t *testing.T) {
 		if err := p.analyzeQuery(query, schema); err != nil {
 			t.Errorf("%s should parse for SQLite: %v", query.Name, err)
 		}
+	}
+}
+
+func TestAnalyzeQuery_CTEWithDerivedOuterTable(t *testing.T) {
+	p := NewQueryParser(&config.Config{Database: config.Database{Provider: "sqlite"}})
+	schema := &Schema{Tables: []*Table{
+		{Name: "policy", Columns: []*Column{{Name: "id", Type: "INTEGER"}, {Name: "action", Type: "TEXT"}}},
+		{Name: "user_policy", Columns: []*Column{{Name: "policy_id", Type: "INTEGER"}}},
+	}}
+	query := &Query{
+		Name: "EffectiveActions",
+		SQL: `WITH overrides AS (
+			SELECT p.action FROM user_policy up JOIN policy p ON p.id = up.policy_id
+		) SELECT DISTINCT action FROM (
+			SELECT action FROM overrides
+		) WHERE action IS NOT NULL`,
+	}
+	if err := p.analyzeQuery(query, schema); err != nil {
+		t.Fatalf("CTE query with a derived outer table was rejected: %v", err)
 	}
 }
 

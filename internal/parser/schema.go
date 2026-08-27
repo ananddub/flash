@@ -21,7 +21,7 @@ var (
 )
 
 func initRegex() {
-	createTableRegex = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)\s*\(([\s\S]*?)\);`)
+	createTableRegex = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)\s*\(`)
 	enumRegex = regexp.MustCompile(`(?i)CREATE\s+TYPE\s+(\w+)\s+AS\s+ENUM\s*\(\s*([^)]+)\s*\)`)
 	createKeyspaceRegex = regexp.MustCompile(`(?i)CREATE\s+KEYSPACE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)`)
 	createUDTRegex = regexp.MustCompile(`(?i)CREATE\s+TYPE\s+(\S+)\s*\(([\s\S]*?)\);`)
@@ -151,19 +151,24 @@ func (p *SchemaParser) parseCreateTables(sql string) []*Table {
 	sql = utils.RemoveComments(sql)
 
 	tables := make([]*Table, 0, 8)
-	matches := createTableRegex.FindAllStringSubmatch(sql, -1)
+	matches := createTableRegex.FindAllStringSubmatchIndex(sql, -1)
 
 	for _, match := range matches {
-		if len(match) < 3 {
+		if len(match) < 4 {
+			continue
+		}
+		bodyStart := match[1]
+		bodyEnd := findMatchingParen(sql, bodyStart-1)
+		if bodyEnd < 0 {
 			continue
 		}
 
 		table := &Table{
-			Name:    stripTableNameQuotes(match[1]),
+			Name:    stripTableNameQuotes(sql[match[2]:match[3]]),
 			Columns: make([]*Column, 0, 16),
 		}
 
-		body := match[2]
+		body := sql[bodyStart:bodyEnd]
 		// Strip CQL WITH clause — may follow after a newline/space
 		withStripper := regexp.MustCompile(`(?i)\)?\s*WITH\s+(CLUSTERING|COMPACT|compression)[\s\S]*$`)
 		body = withStripper.ReplaceAllString(body, "")
@@ -176,14 +181,7 @@ func (p *SchemaParser) parseCreateTables(sql string) []*Table {
 			}
 
 			lineUpper := strings.ToUpper(line)
-			if strings.HasPrefix(lineUpper, "PRIMARY") ||
-				strings.HasPrefix(lineUpper, "FOREIGN") ||
-				strings.HasPrefix(lineUpper, "UNIQUE") ||
-				strings.HasPrefix(lineUpper, "CHECK") ||
-				strings.HasPrefix(lineUpper, "CONSTRAINT") ||
-				strings.HasPrefix(lineUpper, "INDEX") ||
-				strings.HasPrefix(lineUpper, "KEY") ||
-				strings.HasPrefix(lineUpper, "STATIC") {
+			if isTableConstraint(lineUpper) {
 				continue
 			}
 
@@ -244,6 +242,53 @@ func (p *SchemaParser) parseCreateTables(sql string) []*Table {
 	}
 
 	return tables
+}
+
+func findMatchingParen(sql string, open int) int {
+	depth := 0
+	inString := false
+	for i := open; i < len(sql); i++ {
+		switch sql[i] {
+		case '\'':
+			if inString && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+		case '(':
+			if !inString {
+				depth++
+			}
+		case ')':
+			if !inString {
+				depth--
+				if depth == 0 {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+func isTableConstraint(lineUpper string) bool {
+	for _, prefix := range []string{
+		"PRIMARY KEY",
+		"FOREIGN KEY",
+		"UNIQUE ",
+		"UNIQUE(",
+		"CHECK ",
+		"CHECK(",
+		"CONSTRAINT ",
+		"INDEX ",
+		"KEY ",
+		"STATIC ",
+	} {
+		if strings.HasPrefix(lineUpper, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *SchemaParser) parseCreateViews(sql string) []*Table {
