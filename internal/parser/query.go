@@ -412,7 +412,7 @@ func (p *QueryParser) analyzeQuery(query *Query, schema *Schema) error {
 			Name:     paramName,
 			Type:     paramType,
 			ParamNum: paramNum,
-			Nullable: p.isCQLProvider() && p.isParamNullable(paramName, table),
+			Nullable: p.isParamNullable(paramName, table),
 		}
 	}
 

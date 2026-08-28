@@ -372,7 +372,7 @@ func (g *Generator) writeCachedQueryMethod(w *strings.Builder, q *parser.Query, 
 	} else {
 		for _, p := range q.Params {
 			paramName := utils.ToSnakeCase(p.Name)
-			paramType := g.paramTypeToRust(p.Type)
+			paramType := g.paramTypeToRustNullable(p.Type, p.Nullable)
 			w.WriteString(fmt.Sprintf("        %s: %s,\n", paramName, paramType))
 			paramNames = append(paramNames, paramName)
 		}
@@ -455,7 +455,7 @@ func (g *Generator) writePurgingMutationMethod(w *strings.Builder, q *parser.Que
 	} else {
 		for _, p := range q.Params {
 			paramName := utils.ToSnakeCase(p.Name)
-			paramType := g.paramTypeToRust(p.Type)
+			paramType := g.paramTypeToRustNullable(p.Type, p.Nullable)
 			w.WriteString(fmt.Sprintf("        %s: %s,\n", paramName, paramType))
 			paramNames = append(paramNames, paramName)
 		}

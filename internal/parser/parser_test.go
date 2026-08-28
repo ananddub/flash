@@ -179,6 +179,28 @@ func TestAnalyzeQuery_SQLiteInsertOrIgnoreUsesColumnNamesAndTypes(t *testing.T) 
 	}
 }
 
+func TestAnalyzeQuery_SQLiteNullableParamsFollowSchema(t *testing.T) {
+	p := NewQueryParser(&config.Config{Database: config.Database{Provider: "sqlite"}})
+	schema := &Schema{Tables: []*Table{{
+		Name: "vault_providers",
+		Columns: []*Column{
+			{Name: "name", Type: "TEXT"},
+			{Name: "namespace", Type: "TEXT", Nullable: true},
+			{Name: "config_json", Type: "TEXT", Nullable: true},
+		},
+	}}}
+	query := &Query{
+		Name: "CreateVaultProvider",
+		SQL:  "INSERT INTO vault_providers (name, namespace, config_json) VALUES (?, ?, ?)",
+	}
+	if err := p.analyzeQuery(query, schema); err != nil {
+		t.Fatalf("query analysis failed: %v", err)
+	}
+	if query.Params[0].Nullable || !query.Params[1].Nullable || !query.Params[2].Nullable {
+		t.Fatalf("unexpected nullability: %+v", query.Params)
+	}
+}
+
 func TestParseCreateTables_Multiple(t *testing.T) {
 	p := newSchemaParser(t, t.TempDir())
 	sql := `

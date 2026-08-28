@@ -166,7 +166,7 @@ func (g *Generator) generateSingleRustFile(src string, queries []*parser.Query, 
 		w.WriteString(fmt.Sprintf("pub struct %s {\n", structName))
 		for _, p := range q.Params {
 			fieldName := utils.ToSnakeCase(p.Name)
-			rustType := g.sqlTypeToRust(p.Type, false)
+			rustType := g.sqlTypeToRust(p.Type, p.Nullable)
 			w.WriteString(fmt.Sprintf("    pub %s: %s,\n", fieldName, rustType))
 		}
 		w.WriteString("}\n\n")
@@ -241,7 +241,7 @@ func (g *Generator) generateQueryMethod(w *strings.Builder, q *parser.Query) {
 	} else {
 		for _, p := range q.Params {
 			paramName := utils.ToSnakeCase(p.Name)
-			paramType := g.paramTypeToRust(p.Type)
+			paramType := g.paramTypeToRustNullable(p.Type, p.Nullable)
 			w.WriteString(fmt.Sprintf("        %s: %s,\n", paramName, paramType))
 		}
 	}
@@ -491,6 +491,14 @@ func (g *Generator) paramTypeToRust(sqlType string) string {
 	}
 }
 
+func (g *Generator) paramTypeToRustNullable(sqlType string, nullable bool) string {
+	if !nullable {
+		return g.paramTypeToRust(sqlType)
+	}
+	base := g.paramTypeToRust(sqlType)
+	return fmt.Sprintf("Option<%s>", base)
+}
+
 // collectImports determines which crate imports are needed for a file's queries
 func (g *Generator) collectImports(queries []*parser.Query) []string {
 	needsChronoNaive := false
@@ -504,7 +512,7 @@ func (g *Generator) collectImports(queries []*parser.Query) []string {
 			g.checkTypeImports(col.Type, col.Nullable, &needsChronoNaive, &needsChronoUtc, &needsUUID, &needsDecimal, &needsJsonValue)
 		}
 		for _, p := range q.Params {
-			g.checkTypeImports(p.Type, false, &needsChronoNaive, &needsChronoUtc, &needsUUID, &needsDecimal, &needsJsonValue)
+			g.checkTypeImports(p.Type, p.Nullable, &needsChronoNaive, &needsChronoUtc, &needsUUID, &needsDecimal, &needsJsonValue)
 		}
 	}
 
