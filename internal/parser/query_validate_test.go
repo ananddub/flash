@@ -19,3 +19,14 @@ func TestValidateInsertColumns_NestedFunctionArguments(t *testing.T) {
 		t.Fatalf("valid INSERT with nested function arguments was rejected: %v", err)
 	}
 }
+
+func TestValidateInsertColumns_SQLiteConflictClause(t *testing.T) {
+	parser := &QueryParser{}
+	table := &Table{Name: "project_tags", Columns: []*Column{{Name: "project_id"}, {Name: "tag_id"}}}
+	if err := parser.validateInsertColumns(
+		"INSERT OR IGNORE INTO project_tags (project_id, tag_id) VALUES (?, ?)",
+		table,
+	); err != nil {
+		t.Fatalf("valid SQLite INSERT OR IGNORE was rejected: %v", err)
+	}
+}

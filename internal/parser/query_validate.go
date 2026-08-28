@@ -10,7 +10,7 @@ import (
 
 // validateInsertColumns validates that all columns in an INSERT statement exist in the table
 func (p *QueryParser) validateInsertColumns(sql string, table *Table) error {
-	insertRegex := regexp.MustCompile(`(?i)INSERT\s+INTO\s+[\w"]+\s*\(([^)]+)\)\s*VALUES\s*\(`)
+	insertRegex := regexp.MustCompile(`(?i)INSERT(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?\s+INTO\s+[\w"]+\s*\(([^)]+)\)\s*VALUES\s*\(`)
 	matches := insertRegex.FindStringSubmatch(sql)
 
 	if len(matches) < 2 {

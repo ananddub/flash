@@ -25,7 +25,7 @@ func (ti *TypeInferrer) InferParamName(sql string, paramIndex int) string {
 	// Resolve placeholders in INSERT value lists and function-wrapped UPDATE
 	// assignments before the legacy pattern handlers. Those handlers assume a
 	// one-to-one parameter/column position and misname literals or COALESCE.
-	if strings.Contains(sql, "?") && (strings.Contains(strings.ToUpper(sql), "INSERT INTO") ||
+	if strings.Contains(sql, "?") && (regexp.MustCompile(`(?i)INSERT(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?\s+INTO`).MatchString(sql) ||
 		strings.Contains(strings.ToUpper(sql), "COALESCE")) {
 		if name := inferQuestionParamName(sql, paramIndex); name != "" {
 			return name
@@ -37,7 +37,7 @@ func (ti *TypeInferrer) InferParamName(sql string, paramIndex int) string {
 		}
 	}
 	// Check for INSERT statement first — collect ALL column names from every INSERT in multi-statement SQL
-	insertColRegex := regexp.MustCompile(`(?i)INSERT\s+INTO\s+\S+\s*\(([\s\S]*?)\)\s*VALUES`)
+	insertColRegex := regexp.MustCompile(`(?i)INSERT(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?\s+INTO\s+\S+\s*\(([\s\S]*?)\)\s*VALUES`)
 	allInsertCols := []string{}
 	for _, match := range insertColRegex.FindAllStringSubmatch(sql, -1) {
 		for _, c := range strings.Split(match[1], ",") {
@@ -584,7 +584,7 @@ func inferQuestionParamName(sql string, paramIndex int) string {
 
 	// INSERT columns must be mapped to the VALUES expression containing the
 	// placeholder; literals and function calls may mean column N is not param N.
-	insertRe := regexp.MustCompile(`(?i)INSERT\s+INTO\s+\S+\s*\(([^)]+)\)\s*VALUES\s*\(`)
+	insertRe := regexp.MustCompile(`(?i)INSERT(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?\s+INTO\s+\S+\s*\(([^)]+)\)\s*VALUES\s*\(`)
 	if match := insertRe.FindStringSubmatchIndex(sql); len(match) >= 4 {
 		valuesOpen := match[1] - 1
 		valuesEnd := findMatchingParen(sql, valuesOpen)

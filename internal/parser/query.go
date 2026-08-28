@@ -26,7 +26,7 @@ type QueryParser struct {
 func NewQueryParser(cfg *config.Config) *QueryParser {
 	return &QueryParser{
 		Config:       cfg,
-		insertRegex:  regexp.MustCompile(`(?i)INSERT\s+INTO\s+([^\s;]+)`),
+		insertRegex:  regexp.MustCompile(`(?i)INSERT(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?\s+INTO\s+([^\s;]+)`),
 		updateRegex:  regexp.MustCompile(`(?i)UPDATE\s+([^\s;]+)`),
 		deleteRegex:  regexp.MustCompile(`(?i)DELETE\s+FROM\s+([^\s;]+)`),
 		typeInferrer: NewTypeInferrer(),
@@ -367,7 +367,7 @@ func (p *QueryParser) analyzeQuery(query *Query, schema *Schema) error {
 	// Validate INSERT/UPDATE columns exist in the schema.
 	if table != nil {
 		sqlUpper := strings.ToUpper(query.SQL)
-		if strings.Contains(sqlUpper, "INSERT INTO") {
+		if p.insertRegex.MatchString(query.SQL) {
 			if err := p.validateInsertColumns(query.SQL, table); err != nil {
 				return fmt.Errorf("validation error in query '%s': %w", query.Name, err)
 			}

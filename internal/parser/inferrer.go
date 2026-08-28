@@ -224,7 +224,7 @@ func (ti *TypeInferrer) inferParamTypeInternal(sql string, paramIndex int, table
 	}
 
 	if strings.Contains(strings.ToUpper(sql), "INSERT") {
-		insertColRegex := regexp.MustCompile(`(?i)INSERT\s+INTO\s+\S+\s*\(([\s\S]*?)\)\s*VALUES`)
+		insertColRegex := regexp.MustCompile(`(?i)INSERT(?:\s+OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE))?\s+INTO\s+\S+\s*\(([\s\S]*?)\)\s*VALUES`)
 		allInsertCols := []string{}
 		for _, match := range insertColRegex.FindAllStringSubmatch(sql, -1) {
 			for _, c := range strings.Split(match[1], ",") {

@@ -155,6 +155,30 @@ func TestAnalyzeQuery_CTEQuestionParamsUseSchemaTypes(t *testing.T) {
 	}
 }
 
+func TestAnalyzeQuery_SQLiteInsertOrIgnoreUsesColumnNamesAndTypes(t *testing.T) {
+	p := NewQueryParser(&config.Config{Database: config.Database{Provider: "sqlite"}})
+	schema := &Schema{Tables: []*Table{{
+		Name: "project_tags",
+		Columns: []*Column{
+			{Name: "project_id", Type: "INTEGER"},
+			{Name: "tag_id", Type: "INTEGER"},
+		},
+	}}}
+	query := &Query{
+		Name: "AddTagToProject",
+		SQL:  "INSERT OR IGNORE INTO project_tags (project_id, tag_id) VALUES (?, ?)",
+	}
+	if err := p.analyzeQuery(query, schema); err != nil {
+		t.Fatalf("query analysis failed: %v", err)
+	}
+	wantNames := []string{"project_id", "tag_id"}
+	for i, param := range query.Params {
+		if param.Name != wantNames[i] || param.Type != "INTEGER" {
+			t.Errorf("param%d = %s/%s, want %s/INTEGER", i+1, param.Name, param.Type, wantNames[i])
+		}
+	}
+}
+
 func TestParseCreateTables_Multiple(t *testing.T) {
 	p := newSchemaParser(t, t.TempDir())
 	sql := `
@@ -328,6 +352,18 @@ func TestTypeInferrer_InferParamName_DomainWrappedPath(t *testing.T) {
 	ti := NewTypeInferrer()
 	sql := "SELECT COUNT(*) FROM domains WHERE lower(trim(host, '.')) = lower(trim(?, '.')) AND COALESCE(NULLIF(rtrim(path, '/'), ''), '/') = ? AND (? IS NULL OR id != ?)"
 	for index, want := range []string{"host", "path", "id", "id"} {
+		if got := ti.InferParamName(sql, index+1); got != want {
+			t.Errorf("param%d name = %q, want %s", index+1, got, want)
+		}
+	}
+}
+
+func TestTypeInferrer_InferParamName_RepeatedSubqueries(t *testing.T) {
+	ti := NewTypeInferrer()
+	sql := `SELECT (SELECT COUNT(*) FROM servers WHERE ssh_key_id = ?) +
+		(SELECT COUNT(*) FROM applications WHERE custom_git_ssh_key_id = ?) +
+		(SELECT COUNT(*) FROM compose_projects WHERE custom_git_ssh_key_id = ?)`
+	for index, want := range []string{"ssh_key_id", "custom_git_ssh_key_id", "custom_git_ssh_key_id"} {
 		if got := ti.InferParamName(sql, index+1); got != want {
 			t.Errorf("param%d name = %q, want %s", index+1, got, want)
 		}

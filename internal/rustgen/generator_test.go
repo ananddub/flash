@@ -155,6 +155,16 @@ func TestSQLTypeToRust_BasicTypes(t *testing.T) {
 	}
 }
 
+func TestSQLTypeToRust_SQLiteIntegerUsesI64(t *testing.T) {
+	g := newGen("sqlite")
+	if got := g.sqlTypeToRust("INTEGER", false); got != "i64" {
+		t.Fatalf("SQLite INTEGER = %q, want i64", got)
+	}
+	if got := g.sqlTypeToRust("INTEGER", true); got != "Option<i64>" {
+		t.Fatalf("nullable SQLite INTEGER = %q, want Option<i64>", got)
+	}
+}
+
 func TestSQLTypeToRust_ArrayType(t *testing.T) {
 	g := newGen("postgresql")
 
